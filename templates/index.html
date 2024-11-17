@@ -29,7 +29,7 @@
             display: flex;
             flex-direction: column;
         }
-        input[type="file"], input[type="number"], input[type="submit"] {
+        input[type="file"], input[type="number"], input[type="submit"], button {
             margin-bottom: 10px;
         }
         #uploaded-image {
@@ -63,21 +63,41 @@
                 alert('Failed to copy curves: ' + err);
             });
         }
+
+        function proceedWithRecommended() {
+            const form = document.getElementById('upload-form');
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'recommended';
+            input.value = 'true';
+            form.appendChild(input);
+            form.submit();
+        }
     </script>
 </head>
 <body>
 <div class="container">
     <div class="upload-section">
         <h2>Upload Image</h2>
-        <form action="/" method="post" enctype="multipart/form-data">
-            <input type="file" name="file" onchange="previewFile()">
+        <form id="upload-form" action="/" method="post" enctype="multipart/form-data">
+            <input type="file" name="file" accept=".png, .jpg, .jpeg" onchange="previewFile()">
+            <label for="simplification_factor">Simplification Factor:</label>
+            <input type="number" step="0.01" name="simplification_factor" id="simplification_factor" value="0.00">
             <label for="low_threshold">Low Threshold:</label>
             <input type="number" name="low_threshold" id="low_threshold" value="50">
             <label for="high_threshold">High Threshold:</label>
             <input type="number" name="high_threshold" id="high_threshold" value="150">
-            <label for="epsilon_factor">Epsilon Factor:</label>
-            <input type="number" step="0.01" name="epsilon_factor" id="epsilon_factor" value="0.01">
-            <input type="submit" value="Upload">
+            <label for="curve_color">Curve Color:</label>
+            <input type="color" name="curve_color" id="curve_color" value="#2464b4">
+            <label for="background_color">Background Color:</label>
+            <input type="color" name="background_color" id="background_color" value="#ffffff">
+            <label for="output_format">Output Format:</label>
+            <select name="output_format" id="output_format">
+                <option value="expressions">Expressions</option>
+                <option value="png">PNG Image</option>
+            </select>
+            <input type="submit" value="Proceed with chosen settings">
+            <button type="button" onclick="proceedWithRecommended()">Proceed with Recommended Settings</button>
         </form>
         <img id="uploaded-image" src="" alt="Uploaded Image">
     </div>
@@ -92,6 +112,8 @@
                     </li>
                 {% endfor %}
             </ul>
+        {% elif png_image_url %}
+            <img src="{{ png_image_url }}" alt="Resulting PNG" style="max-width: 100%;">
         {% else %}
             <p>No results yet.</p>
         {% endif %}

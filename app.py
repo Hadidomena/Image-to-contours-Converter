@@ -1,77 +1,54 @@
-import cv2
-import potrace
-import numpy as np
-from flask import Flask, request, render_template, redirect, url_for
 import multiprocessing
-import os
 import time
+
+import cv2
+import numpy as np
+import potrace
+from flask import Flask, request, render_template, redirect, send_file
+import io
+import base64
 
 app = Flask(__name__)
 
-FRAME_DIR = 'frames'
-FILE_EXT = 'png'
 COLOUR = '#2464b4'
-SCREENSHOT_SIZE = [None, None]
-SCREENSHOT_FORMAT = 'png'
-OPEN_BROWSER = True
-
-BILATERAL_FILTER = False
-DOWNLOAD_IMAGES = False
 USE_L2_GRADIENT = False
-SHOW_GRID = True
 
 frame = multiprocessing.Value('i', 0)
 height = multiprocessing.Value('i', 0, lock=False)
 width = multiprocessing.Value('i', 0, lock=False)
-frame_latex = 0
 
-UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
-
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
-
 
 def allowed_file(filename):
     return '.' in filename and \
         filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-
-def get_contours(filename, low_threshold=50, high_threshold=150):
-    start_time = time.time()
-    image = cv2.imread(filename)
+def get_contours(image, low_threshold=50, high_threshold=150):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    nudge = .33
-
-    median = max(10, min(245, np.median(gray)))
-    lower = int(max(0, int(1 - nudge) * median))
-    upper = int(min(255, int(1 + nudge) * median))
-    gray = cv2.bilateralFilter(gray, 5, 50, 50)
-    print(lower, upper)
-    # Flip the image vertically
     gray = cv2.flip(gray, 0)
 
-    # Apply Canny edge detection
-    edges = cv2.Canny(gray, lower, upper, L2gradient=USE_L2_GRADIENT)
+    if request.form.get('recommended') == 'true':
+        median = max(10, min(245, np.median(gray)))
+        nudge = 0.33
+        low_threshold = int(max(0, int(1 - nudge) * median))
+        high_threshold = int(min(255, int(1 + nudge) * median))
+        gray = cv2.bilateralFilter(gray, 5, 50, 50)
+
+    edges = cv2.Canny(gray, low_threshold, high_threshold, L2gradient=USE_L2_GRADIENT if 'recommended' == 'true' else None)
 
     with frame.get_lock():
         frame.value += 1
         height.value = max(height.value, image.shape[0])
         width.value = max(width.value, image.shape[1])
 
-    print("Time taken to get contours: " , time.time() - start_time)
     return edges
 
-
-def get_trace(data, epsilon_factor=0.00):
-    # Use RETR_TREE to find all contours, including internal edges
+def get_trace(data, simplification_factor=0.00):
     contours, _ = cv2.findContours(data, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
     simplified_contours = np.zeros_like(data)
+
     for contour in contours:
-        epsilon = epsilon_factor * cv2.arcLength(contour, True)
+        epsilon = simplification_factor * cv2.arcLength(contour, True)
         approx = cv2.approxPolyDP(contour, epsilon, True)
         cv2.drawContours(simplified_contours, [approx], -1, (255), thickness=cv2.FILLED)
 
@@ -79,13 +56,53 @@ def get_trace(data, epsilon_factor=0.00):
     path = bmp.trace(2, potrace.TURNPOLICY_MINORITY, 1.0, 1, .5)
     return path
 
+def hex_to_bgr(hex_color):
+    """Convert hex color string to a BGR tuple."""
+    hex_color = hex_color.lstrip('#')  # Remove the '#' if it's there
+    return (int(hex_color[4:6], 16), int(hex_color[2:4], 16), int(hex_color[0:2], 16))  # BGR format
 
-def get_latex(filename, low_threshold=50, high_threshold=150, epsilon_factor=0.01):
+def create_png_image(original_image, path, curve_color_hex, background_color_hex):
+    # Create a blank image with the same dimensions as the original
+    height, width = original_image.shape[:2]
+
+    # Convert hex colors to BGR tuples
+    curve_color = hex_to_bgr(curve_color_hex)
+    background_color = hex_to_bgr(background_color_hex)
+
+    # Create the output image with the specified background color
+    output_image = np.full((height, width, 3), background_color, dtype=np.uint8)
+
+    # Draw the curves on the output image
+    for curve in path:
+        # Extract the segments and draw them
+        for segment in curve.segments:
+            if isinstance(segment, potrace.CornerSegment):
+                # For CornerSegment, use the control point and the end point
+                start = (int(segment.c.x), int(segment.c.y))
+                end = (int(segment.end_point.x), int(segment.end_point.y))
+
+                # Draw the corner segment
+                cv2.line(output_image, start, end, curve_color, thickness=2)
+
+            elif hasattr(segment, 'c1') and hasattr(segment, 'c2'):
+                # This is likely a Bezier segment (assumed from having c1 and c2 attributes)
+                start = (int(segment.c1.x), int(segment.c1.y))
+                control1 = (int(segment.c2.x), int(segment.c2.y))
+                end = (int(segment.end_point.x), int(segment.end_point.y))
+
+                # Draw the curve using the Bezier control points
+                cv2.polylines(output_image, [np.array([start, control1, end], dtype=np.int32)], isClosed=False, color=curve_color, thickness=2)
+
+    return output_image
+
+
+
+
+def get_latex(image, low_threshold=50, high_threshold=150, simplification_factor=0.00):
     start_time = time.time()
-
     latex = []
-    contours = get_contours(filename, low_threshold, high_threshold)
-    path = get_trace(contours, epsilon_factor)
+    contours = get_contours(image, low_threshold, high_threshold)
+    path = get_trace(contours, simplification_factor)
 
     for curve in path:
         try:
@@ -116,10 +133,10 @@ def get_latex(filename, low_threshold=50, high_threshold=150, epsilon_factor=0.0
 
     return latex
 
-
 @app.route('/', methods=['GET', 'POST'])
 def upload_file():
     expressions = None
+    png_image_url = None
     if request.method == 'POST':
         if 'file' not in request.files:
             return redirect(request.url)
@@ -127,36 +144,49 @@ def upload_file():
         if file.filename == '':
             return redirect(request.url)
         if file and allowed_file(file.filename):
-            filename = file.filename
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            file.save(filepath)
             try:
                 low_threshold = int(request.form.get('low_threshold', 50))
                 high_threshold = int(request.form.get('high_threshold', 150))
-                epsilon_factor = float(request.form.get('epsilon_factor', 0.01))
+                simplification_factor = float(request.form.get('simplification_factor', 0.00))
+                curve_color = request.form.get('curve_color', COLOUR)
+                background_color = request.form.get('background_color', '#ffffff')
+                output_format = request.form.get('output_format', 'expressions')
 
                 if high_threshold <= low_threshold:
-                    return "High threshold must be greater than low threshold", 400
+                    return "High threshold must be greater than low threshold."
 
-                expressions = get_expressions(filepath, low_threshold, high_threshold, epsilon_factor)
+                npimg = np.frombuffer(file.read(), np.uint8)
+                img = cv2.imdecode(npimg, cv2.IMREAD_COLOR)
+
+                if output_format == 'expressions':
+                    expressions = get_expressions(img, low_threshold, high_threshold, simplification_factor)
+                elif output_format == 'png':
+                    contours = get_contours(img, low_threshold, high_threshold)
+                    path = get_trace(contours, simplification_factor)
+                    png_image = create_png_image(img, path, curve_color, background_color)
+
+                    # Encode the image to PNG format and convert it to a base64 string
+                    _, buffer = cv2.imencode('.png', png_image)
+                    png_image_url = f"data:image/png;base64,{base64.b64encode(buffer).decode()}"
+
             except Exception as e:
                 return f"An error occurred while processing the file: {e}"
-    return render_template('index.html', expressions=expressions)
+    return render_template('index.html', expressions=expressions, png_image_url=png_image_url)
+
+
 
 
 @app.route('/hello', methods=['GET'])
 def hello_world():
     return "Hello World!"
 
-
-if __name__ == '__main__':
-    app.run()
-
-
-def get_expressions(filename, low_threshold=50, high_threshold=150, epsilon_factor=0.01):
+def get_expressions(image, low_threshold=50, high_threshold=150, simplification_factor=0.00):
     exprid = 0
     exprs = []
-    for expr in get_latex(filename, low_threshold, high_threshold, epsilon_factor):
+    for expr in get_latex(image, low_threshold, high_threshold, simplification_factor):
         exprid += 1
         exprs.append({'id': 'expr-' + str(exprid), 'latex': expr, 'color': COLOUR, 'secret': True})
     return exprs
+
+if __name__ == '__main__':
+    app.run()
