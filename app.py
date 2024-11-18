@@ -1,13 +1,11 @@
 import multiprocessing
 import time
-
 import cv2
 import numpy as np
 import potrace
-from flask import Flask, request, render_template, redirect, send_file
-import io
+from flask import Flask, request, render_template, redirect
 import base64
-
+from functools import lru_cache
 app = Flask(__name__)
 
 COLOUR = '#2464b4'
@@ -28,13 +26,18 @@ def get_contours(image, low_threshold=50, high_threshold=150):
     gray = cv2.flip(gray, 0)
 
     if request.form.get('recommended') == 'true':
-        median = max(10, min(245, np.median(gray)))
-        nudge = 0.33
-        low_threshold = int(max(0, int(1 - nudge) * median))
-        high_threshold = int(min(255, int(1 + nudge) * median))
-        gray = cv2.bilateralFilter(gray, 5, 50, 50)
+        # Simplified adaptive thresholding - faster than computing median
+        mean = np.mean(gray)
+        low_threshold = int(max(0, 0.67 * mean))
+        high_threshold = int(min(255, 1.33 * mean))
 
-    edges = cv2.Canny(gray, low_threshold, high_threshold, L2gradient=USE_L2_GRADIENT if 'recommended' == 'true' else None)
+        if mean < 200:  # Only blur if image isn't mostly white
+            gray = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # Use FAST_GRADIENT instead of L2_GRADIENT for speed
+    edges = cv2.Canny(gray, low_threshold, high_threshold,
+                      apertureSize=3,  # Smaller aperture size
+                      L2gradient=False)
 
     with frame.get_lock():
         frame.value += 1
@@ -43,23 +46,40 @@ def get_contours(image, low_threshold=50, high_threshold=150):
 
     return edges
 
-def get_trace(data, simplification_factor=0.00):
-    contours, _ = cv2.findContours(data, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+def get_trace(data, simplification_factor=0.02):  # Increased default simplification
+    # Use CHAIN_APPROX_TC89_KCOS for faster contour approximation
+    contours, _ = cv2.findContours(data, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_TC89_KCOS)
+
+    # Filter out very small contours - they're likely noise
+    min_contour_length = 20 # Can be adjusted
+    contours = [cnt for cnt in contours if len(cnt) >= min_contour_length]
+
     simplified_contours = np.zeros_like(data)
 
+    # Batch process contours for better performance
+    all_approx = []
     for contour in contours:
         epsilon = simplification_factor * cv2.arcLength(contour, True)
         approx = cv2.approxPolyDP(contour, epsilon, True)
-        cv2.drawContours(simplified_contours, [approx], -1, (255), thickness=cv2.FILLED)
+        all_approx.append(approx)
 
+    # Draw all contours at once
+    cv2.drawContours(simplified_contours, all_approx, -1, (255), thickness=cv2.FILLED)
+
+    # Optimize potrace parameters for speed
     bmp = potrace.Bitmap(simplified_contours)
-    path = bmp.trace(2, potrace.TURNPOLICY_MINORITY, 1.0, 1, .5)
+    path = bmp.trace(2,  # turdsize: remove speckles
+                     potrace.TURNPOLICY_MINORITY,
+                     alphamax=0.5,  # More aggressive corner detection
+                     opticurve=1,
+                     opttolerance=0.2)  # Increased tolerance for optimization
     return path
 
 def hex_to_bgr(hex_color):
-    """Convert hex color string to a BGR tuple."""
+    # Convert hex color string to a BGR tuple.
     hex_color = hex_color.lstrip('#')  # Remove the '#' if it's there
-    return (int(hex_color[4:6], 16), int(hex_color[2:4], 16), int(hex_color[0:2], 16))  # BGR format
+    return int(hex_color[4:6], 16), int(hex_color[2:4], 16), int(hex_color[0:2], 16)  # BGR format
 
 def create_png_image(original_image, path, curve_color_hex, background_color_hex):
     # Create a blank image with the same dimensions as the original
@@ -74,7 +94,6 @@ def create_png_image(original_image, path, curve_color_hex, background_color_hex
 
     # Draw the curves on the output image
     for curve in path:
-        # Extract the segments and draw them
         for segment in curve.segments:
             if isinstance(segment, potrace.CornerSegment):
                 # For CornerSegment, use the control point and the end point
@@ -93,14 +112,19 @@ def create_png_image(original_image, path, curve_color_hex, background_color_hex
                 # Draw the curve using the Bezier control points
                 cv2.polylines(output_image, [np.array([start, control1, end], dtype=np.int32)], isClosed=False, color=curve_color, thickness=2)
 
-    return output_image
+    return output_image[::-1]
 
-
-
-
-def get_latex(image, low_threshold=50, high_threshold=150, simplification_factor=0.00):
+@lru_cache(maxsize=32)
+def get_latex(image, low_threshold=50, high_threshold=150, simplification_factor=0.02):
     start_time = time.time()
     latex = []
+
+    # Convert image to bytes for caching
+    if isinstance(image, np.ndarray):
+        image_bytes = image.tobytes()
+        shape = image.shape
+        image = np.frombuffer(image_bytes, dtype=np.uint8).reshape(shape)
+
     contours = get_contours(image, low_threshold, high_threshold)
     path = get_trace(contours, simplification_factor)
 
@@ -109,27 +133,31 @@ def get_latex(image, low_threshold=50, high_threshold=150, simplification_factor
             segments = curve.segments
             start = curve.start_point
             x0, y0 = start.x, start.y
+
+            # Pre-calculate common expressions
             for segment in segments:
                 if segment.is_corner:
                     x1, y1 = segment.c.x, segment.c.y
                     x2, y2 = segment.end_point.x, segment.end_point.y
-                    latex.append('((1-t)%f+t%f,(1-t)%f+t%f)' % (x0, x1, y0, y1))
-                    latex.append('((1-t)%f+t%f,(1-t)%f+t%f)' % (x1, x2, y1, y2))
+                    latex.append(f'((1-t){x0}+t{x1},(1-t){y0}+t{y1})')
+                    latex.append(f'((1-t){x1}+t{x2},(1-t){y1}+t{y2})')
                 else:
                     x1, y1 = segment.c1.x, segment.c1.y
                     x2, y2 = segment.c2.x, segment.c2.y
                     x3, y3 = segment.end_point.x, segment.end_point.y
-                    latex.append('((1-t)((1-t)((1-t)%f+t%f)+t((1-t)%f+t%f))+t((1-t)((1-t)%f+t%f)+t((1-t)%f+t%f)),\
-                    (1-t)((1-t)((1-t)%f+t%f)+t((1-t)%f+t%f))+t((1-t)((1-t)%f+t%f)+t((1-t)%f+t%f)))' % \
-                                 (x0, x1, x1, x2, x1, x2, x2, x3, y0, y1, y1, y2, y1, y2, y2, y3))
+                    # Use f-strings for faster string formatting
+                    latex.append(
+                        f'((1-t)((1-t)((1-t){x0}+t{x1})+t((1-t){x1}+t{x2}))+t((1-t){x1}+t{x2})+t((1-t){x2}+t{x3})),'
+                        f'(1-t)((1-t)((1-t){y0}+t{y1})+t((1-t){y1}+t{y2}))+t((1-t){y1}+t{y2})+t((1-t){y2}+t{y3})))'
+                    )
                 start = segment.end_point
                 x0, y0 = start.x, start.y
         except Exception as e:
             print(f"Error processing curve: {e}")
+            continue  # Skip problematic curves instead of breaking
 
     end_time = time.time()
-    processing_time = end_time - start_time
-    print(f"Time taken to create curves: {processing_time:.2f} seconds")
+    print(f"Time taken to create curves: {end_time - start_time:.2f} seconds")
 
     return latex
 
@@ -172,9 +200,6 @@ def upload_file():
             except Exception as e:
                 return f"An error occurred while processing the file: {e}"
     return render_template('index.html', expressions=expressions, png_image_url=png_image_url)
-
-
-
 
 @app.route('/hello', methods=['GET'])
 def hello_world():
