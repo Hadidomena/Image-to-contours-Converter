@@ -6,6 +6,7 @@ import potrace
 from flask import Flask, request, render_template, redirect
 import base64
 from functools import lru_cache
+
 app = Flask(__name__)
 
 COLOUR = '#2464b4'
@@ -22,12 +23,13 @@ def allowed_file(filename):
         filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def get_contours(image, low_threshold=50, high_threshold=150):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    # Convert to grayscale with explicit dtype
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.uint8)
     gray = cv2.flip(gray, 0)
 
     if request.form.get('recommended') == 'true':
         # Simplified adaptive thresholding - faster than computing median
-        mean = np.mean(gray)
+        mean = float(np.mean(gray))
         low_threshold = int(max(0, 0.67 * mean))
         high_threshold = int(min(255, 1.33 * mean))
 
@@ -46,7 +48,7 @@ def get_contours(image, low_threshold=50, high_threshold=150):
 
     return edges
 
-def get_trace(data, simplification_factor=0.02):  # Increased default simplification
+def get_trace(data, simplification_factor=0.02):
     # Use CHAIN_APPROX_TC89_KCOS for faster contour approximation
     contours, _ = cv2.findContours(data, cv2.RETR_EXTERNAL,
                                    cv2.CHAIN_APPROX_TC89_KCOS)
@@ -55,7 +57,8 @@ def get_trace(data, simplification_factor=0.02):  # Increased default simplifica
     min_contour_length = 20 # Can be adjusted
     contours = [cnt for cnt in contours if len(cnt) >= min_contour_length]
 
-    simplified_contours = np.zeros_like(data)
+    # Create zeros array with same shape and type
+    simplified_contours = np.zeros(data.shape, dtype=data.dtype)
 
     # Batch process contours for better performance
     all_approx = []
@@ -68,16 +71,38 @@ def get_trace(data, simplification_factor=0.02):  # Increased default simplifica
     cv2.drawContours(simplified_contours, all_approx, -1, (255), thickness=cv2.FILLED)
 
     # Optimize potrace parameters for speed
+    # Use a more generic approach to handle different potrace library versions
     bmp = potrace.Bitmap(simplified_contours)
-    path = bmp.trace(2,  # turdsize: remove speckles
-                     potrace.TURNPOLICY_MINORITY,
-                     alphamax=0.5,  # More aggressive corner detection
-                     opticurve=1,
-                     opttolerance=0.2)  # Increased tolerance for optimization
+    
+    # Try to handle different potrace library versions
+    try:
+        # Try the specific constant first
+        turn_policy = getattr(potrace, 'TURNPOLICY_MINORITY', 1)
+    except (AttributeError, NameError):
+        # Fallback to a default turn policy
+        turn_policy = 1  # Typically represents a default conservative turn policy
+
+    try:
+        path = bmp.trace(
+            turdsize=2,  # remove speckles
+            turnpolicy=turn_policy,
+            alphamax=0.5,  # More aggressive corner detection
+            opticurve=1,
+            opttolerance=0.2  # Increased tolerance for optimization
+        )
+    except TypeError:
+        # Fallback if some parameters are not supported
+        path = bmp.trace(
+            2,  # turdsize: remove speckles
+            alphamax=0.5,  # More aggressive corner detection
+            opticurve=1,
+            opttolerance=0.2  # Increased tolerance for optimization
+        )
+
     return path
 
 def hex_to_bgr(hex_color):
-    # Convert hex color string to a BGR tuple.
+    # Convert hex color string to a BGR tuple
     hex_color = hex_color.lstrip('#')  # Remove the '#' if it's there
     return int(hex_color[4:6], 16), int(hex_color[2:4], 16), int(hex_color[0:2], 16)  # BGR format
 
@@ -114,16 +139,17 @@ def create_png_image(original_image, path, curve_color_hex, background_color_hex
 
     return output_image[::-1]
 
-@lru_cache(maxsize=32)
+def image_to_hashable(image):
+    """Convert image to a hashable representation"""
+    # Convert to bytes and include shape information
+    return (image.tobytes(), image.shape, image.dtype)
+
 def get_latex(image, low_threshold=50, high_threshold=150, simplification_factor=0.02):
     start_time = time.time()
     latex = []
 
-    # Convert image to bytes for caching
-    if isinstance(image, np.ndarray):
-        image_bytes = image.tobytes()
-        shape = image.shape
-        image = np.frombuffer(image_bytes, dtype=np.uint8).reshape(shape)
+    # Ensure image is uint8
+    image = image.astype(np.uint8)
 
     contours = get_contours(image, low_threshold, high_threshold)
     path = get_trace(contours, simplification_factor)
@@ -160,6 +186,13 @@ def get_latex(image, low_threshold=50, high_threshold=150, simplification_factor
     print(f"Time taken to create curves: {end_time - start_time:.2f} seconds")
 
     return latex
+
+@lru_cache(maxsize=32)
+def cached_get_latex(image_bytes, low_threshold=50, high_threshold=150, simplification_factor=0.02):
+    """Cached version of get_latex that uses a hashable image representation"""
+    # Reconstruct numpy array from bytes
+    image_array = np.frombuffer(image_bytes, dtype=np.uint8).reshape((low_threshold, high_threshold, 3))
+    return get_latex(image_array, low_threshold, high_threshold, simplification_factor)
 
 @app.route('/', methods=['GET', 'POST'])
 def upload_file():
@@ -200,10 +233,6 @@ def upload_file():
             except Exception as e:
                 return f"An error occurred while processing the file: {e}"
     return render_template('index.html', expressions=expressions, png_image_url=png_image_url)
-
-@app.route('/hello', methods=['GET'])
-def hello_world():
-    return "Hello World!"
 
 def get_expressions(image, low_threshold=50, high_threshold=150, simplification_factor=0.00):
     exprid = 0
