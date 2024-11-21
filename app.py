@@ -129,7 +129,6 @@ def create_png_image(original_image, path, curve_color_hex, background_color_hex
                 cv2.line(output_image, start, end, curve_color, thickness=2)
 
             elif hasattr(segment, 'c1') and hasattr(segment, 'c2'):
-                # This is likely a Bezier segment (assumed from having c1 and c2 attributes)
                 start = (int(segment.c1.x), int(segment.c1.y))
                 control1 = (int(segment.c2.x), int(segment.c2.y))
                 end = (int(segment.end_point.x), int(segment.end_point.y))
@@ -140,7 +139,6 @@ def create_png_image(original_image, path, curve_color_hex, background_color_hex
     return output_image[::-1]
 
 def image_to_hashable(image):
-    """Convert image to a hashable representation"""
     # Convert to bytes and include shape information
     return (image.tobytes(), image.shape, image.dtype)
 
@@ -189,7 +187,6 @@ def get_latex(image, low_threshold=50, high_threshold=150, simplification_factor
 
 @lru_cache(maxsize=32)
 def cached_get_latex(image_bytes, low_threshold=50, high_threshold=150, simplification_factor=0.02):
-    """Cached version of get_latex that uses a hashable image representation"""
     # Reconstruct numpy array from bytes
     image_array = np.frombuffer(image_bytes, dtype=np.uint8).reshape((low_threshold, high_threshold, 3))
     return get_latex(image_array, low_threshold, high_threshold, simplification_factor)
