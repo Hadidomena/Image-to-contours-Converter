@@ -1,195 +1,11 @@
-import multiprocessing
-import time
 import cv2
 import numpy as np
-import potrace
-from flask import Flask, request, render_template, redirect
+from flask import Flask, request, render_template, redirect, jsonify
 import base64
-from functools import lru_cache
-
+from utilities import get_contours, get_expressions, allowed_file, get_trace, create_png_image
 app = Flask(__name__)
 
 COLOUR = '#2464b4'
-USE_L2_GRADIENT = False
-
-frame = multiprocessing.Value('i', 0)
-height = multiprocessing.Value('i', 0, lock=False)
-width = multiprocessing.Value('i', 0, lock=False)
-
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
-
-def allowed_file(filename):
-    return '.' in filename and \
-        filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-def get_contours(image, low_threshold=50, high_threshold=150):
-    # Convert to grayscale with explicit dtype
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.uint8)
-    gray = cv2.flip(gray, 0)
-
-    if request.form.get('recommended') == 'true':
-        # Simplified adaptive thresholding - faster than computing median
-        mean = float(np.mean(gray))
-        low_threshold = int(max(0, 0.67 * mean))
-        high_threshold = int(min(255, 1.33 * mean))
-
-        if mean < 200:  # Only blur if image isn't mostly white
-            gray = cv2.GaussianBlur(gray, (5, 5), 0)
-
-    # Use FAST_GRADIENT instead of L2_GRADIENT for speed
-    edges = cv2.Canny(gray, low_threshold, high_threshold,
-                      apertureSize=3,  # Smaller aperture size
-                      L2gradient=False)
-
-    with frame.get_lock():
-        frame.value += 1
-        height.value = max(height.value, image.shape[0])
-        width.value = max(width.value, image.shape[1])
-
-    return edges
-
-def get_trace(data, simplification_factor=0.02):
-    # Use CHAIN_APPROX_TC89_KCOS for faster contour approximation
-    contours, _ = cv2.findContours(data, cv2.RETR_EXTERNAL,
-                                   cv2.CHAIN_APPROX_TC89_KCOS)
-
-    # Filter out very small contours - they're likely noise
-    min_contour_length = 20 # Can be adjusted
-    contours = [cnt for cnt in contours if len(cnt) >= min_contour_length]
-
-    # Create zeros array with same shape and type
-    simplified_contours = np.zeros(data.shape, dtype=data.dtype)
-
-    # Batch process contours for better performance
-    all_approx = []
-    for contour in contours:
-        epsilon = simplification_factor * cv2.arcLength(contour, True)
-        approx = cv2.approxPolyDP(contour, epsilon, True)
-        all_approx.append(approx)
-
-    # Draw all contours at once
-    cv2.drawContours(simplified_contours, all_approx, -1, (255), thickness=cv2.FILLED)
-
-    # Optimize potrace parameters for speed
-    # Use a more generic approach to handle different potrace library versions
-    bmp = potrace.Bitmap(simplified_contours)
-    
-    # Try to handle different potrace library versions
-    try:
-        # Try the specific constant first
-        turn_policy = getattr(potrace, 'TURNPOLICY_MINORITY', 1)
-    except (AttributeError, NameError):
-        # Fallback to a default turn policy
-        turn_policy = 1  # Typically represents a default conservative turn policy
-
-    try:
-        path = bmp.trace(
-            turdsize=2,  # remove speckles
-            turnpolicy=turn_policy,
-            alphamax=0.5,  # More aggressive corner detection
-            opticurve=1,
-            opttolerance=0.2  # Increased tolerance for optimization
-        )
-    except TypeError:
-        # Fallback if some parameters are not supported
-        path = bmp.trace(
-            2,  # turdsize: remove speckles
-            alphamax=0.5,  # More aggressive corner detection
-            opticurve=1,
-            opttolerance=0.2  # Increased tolerance for optimization
-        )
-
-    return path
-
-def hex_to_bgr(hex_color):
-    # Convert hex color string to a BGR tuple
-    hex_color = hex_color.lstrip('#')  # Remove the '#' if it's there
-    return int(hex_color[4:6], 16), int(hex_color[2:4], 16), int(hex_color[0:2], 16)  # BGR format
-
-def create_png_image(original_image, path, curve_color_hex, background_color_hex):
-    # Create a blank image with the same dimensions as the original
-    height, width = original_image.shape[:2]
-
-    # Convert hex colors to BGR tuples
-    curve_color = hex_to_bgr(curve_color_hex)
-    background_color = hex_to_bgr(background_color_hex)
-
-    # Create the output image with the specified background color
-    output_image = np.full((height, width, 3), background_color, dtype=np.uint8)
-
-    # Draw the curves on the output image
-    for curve in path:
-        for segment in curve.segments:
-            if isinstance(segment, potrace.CornerSegment):
-                # For CornerSegment, use the control point and the end point
-                start = (int(segment.c.x), int(segment.c.y))
-                end = (int(segment.end_point.x), int(segment.end_point.y))
-
-                # Draw the corner segment
-                cv2.line(output_image, start, end, curve_color, thickness=2)
-
-            elif hasattr(segment, 'c1') and hasattr(segment, 'c2'):
-                start = (int(segment.c1.x), int(segment.c1.y))
-                control1 = (int(segment.c2.x), int(segment.c2.y))
-                end = (int(segment.end_point.x), int(segment.end_point.y))
-
-                # Draw the curve using the Bezier control points
-                cv2.polylines(output_image, [np.array([start, control1, end], dtype=np.int32)], isClosed=False, color=curve_color, thickness=2)
-
-    return output_image[::-1]
-
-def image_to_hashable(image):
-    # Convert to bytes and include shape information
-    return (image.tobytes(), image.shape, image.dtype)
-
-def get_latex(image, low_threshold=50, high_threshold=150, simplification_factor=0.02):
-    start_time = time.time()
-    latex = []
-
-    # Ensure image is uint8
-    image = image.astype(np.uint8)
-
-    contours = get_contours(image, low_threshold, high_threshold)
-    path = get_trace(contours, simplification_factor)
-
-    for curve in path:
-        try:
-            segments = curve.segments
-            start = curve.start_point
-            x0, y0 = start.x, start.y
-
-            # Pre-calculate common expressions
-            for segment in segments:
-                if segment.is_corner:
-                    x1, y1 = segment.c.x, segment.c.y
-                    x2, y2 = segment.end_point.x, segment.end_point.y
-                    latex.append(f'((1-t){x0}+t{x1},(1-t){y0}+t{y1})')
-                    latex.append(f'((1-t){x1}+t{x2},(1-t){y1}+t{y2})')
-                else:
-                    x1, y1 = segment.c1.x, segment.c1.y
-                    x2, y2 = segment.c2.x, segment.c2.y
-                    x3, y3 = segment.end_point.x, segment.end_point.y
-                    # Use f-strings for faster string formatting
-                    latex.append(
-                        f'((1-t)((1-t)((1-t){x0}+t{x1})+t((1-t){x1}+t{x2}))+t((1-t){x1}+t{x2})+t((1-t){x2}+t{x3})),'
-                        f'(1-t)((1-t)((1-t){y0}+t{y1})+t((1-t){y1}+t{y2}))+t((1-t){y1}+t{y2})+t((1-t){y2}+t{y3})))'
-                    )
-                start = segment.end_point
-                x0, y0 = start.x, start.y
-        except Exception as e:
-            print(f"Error processing curve: {e}")
-            continue  # Skip problematic curves instead of breaking
-
-    end_time = time.time()
-    print(f"Time taken to create curves: {end_time - start_time:.2f} seconds")
-
-    return latex
-
-@lru_cache(maxsize=32)
-def cached_get_latex(image_bytes, low_threshold=50, high_threshold=150, simplification_factor=0.02):
-    # Reconstruct numpy array from bytes
-    image_array = np.frombuffer(image_bytes, dtype=np.uint8).reshape((low_threshold, high_threshold, 3))
-    return get_latex(image_array, low_threshold, high_threshold, simplification_factor)
 
 @app.route('/', methods=['GET', 'POST'])
 def upload_file():
@@ -222,22 +38,79 @@ def upload_file():
                     contours = get_contours(img, low_threshold, high_threshold)
                     path = get_trace(contours, simplification_factor)
                     png_image = create_png_image(img, path, curve_color, background_color)
-
-                    # Encode the image to PNG format and convert it to a base64 string
                     _, buffer = cv2.imencode('.png', png_image)
                     png_image_url = f"data:image/png;base64,{base64.b64encode(buffer).decode()}"
-
             except Exception as e:
                 return f"An error occurred while processing the file: {e}"
     return render_template('index.html', expressions=expressions, png_image_url=png_image_url)
 
-def get_expressions(image, low_threshold=50, high_threshold=150, simplification_factor=0.00):
-    exprid = 0
-    exprs = []
-    for expr in get_latex(image, low_threshold, high_threshold, simplification_factor):
-        exprid += 1
-        exprs.append({'id': 'expr-' + str(exprid), 'latex': expr, 'color': COLOUR, 'secret': True})
-    return exprs
+@app.route('/get_recommended_values', methods=['POST'])
+def get_recommended_values():
+    file = request.files['file']
+    npimg = np.frombuffer(file.read(), np.uint8)
+    img = cv2.imdecode(npimg, cv2.IMREAD_COLOR)
+
+    # Convert to grayscale
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Calculate image statistics
+    mean = np.mean(gray)
+    median = np.median(gray)
+    std = np.std(gray)
+
+    # Apply adaptive histogram equalization to improve contrast
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    equalized_gray = clahe.apply(gray)
+
+    # Determine image type based on characteristics
+    def classify_image_brightness():
+        if mean < 50:
+            return 'very_dark'
+        elif mean > 200:
+            return 'very_light'
+        else:
+            return 'normal'
+
+    image_type = classify_image_brightness()
+
+    # Adaptive thresholding strategy
+    if image_type == 'very_dark':
+        # For very dark images, use percentile-based approach on equalized image
+        recommended_low_threshold = int(np.percentile(equalized_gray, 5))
+        recommended_high_threshold = int(np.percentile(equalized_gray, 95))
+    elif image_type == 'very_light':
+        # For very light images, use percentile-based approach with inverted image
+        inverted_gray = 255 - gray
+        recommended_low_threshold = int(np.percentile(inverted_gray, 5))
+        recommended_high_threshold = int(np.percentile(inverted_gray, 95))
+    else:
+        # For normal images, use median-based approach
+        low_multiplier = 0.5
+        high_multiplier = 1.5
+        recommended_low_threshold = int(max(0, median * low_multiplier))
+        recommended_high_threshold = int(min(255, median * high_multiplier))
+
+    # Ensure meaningful threshold separation
+    if recommended_high_threshold <= recommended_low_threshold:
+        # Fallback strategy if thresholds are too close
+        recommended_low_threshold = max(0, int(median - std))
+        recommended_high_threshold = min(255, int(median + std))
+
+    # Additional fallback to prevent edge cases
+    if recommended_high_threshold <= recommended_low_threshold:
+        # Last resort: use fixed offset from median
+        recommended_low_threshold = max(0, int(median - 50))
+        recommended_high_threshold = min(255, int(median + 50))
+
+    # Validate thresholds
+    recommended_low_threshold = max(0, recommended_low_threshold)
+    recommended_high_threshold = min(255, max(recommended_low_threshold + 1, recommended_high_threshold))
+
+    return jsonify({
+        'recommended_low_threshold': int(recommended_low_threshold),
+        'recommended_high_threshold': int(recommended_high_threshold),
+        'recommended_simplification_factor': 0.0
+    })
 
 if __name__ == '__main__':
     app.run()

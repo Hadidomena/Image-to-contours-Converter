@@ -48,11 +48,31 @@
 
             reader.addEventListener('load', function () {
                 preview.src = reader.result;
+                updateRecommendedValues(file);
             }, false);
 
             if (file) {
                 reader.readAsDataURL(file);
             }
+        }
+
+        function updateRecommendedValues(file) {
+            const formData = new FormData();
+            formData.append('file', file);
+
+            fetch('/get_recommended_values', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('simplification_factor').value = data.recommended_simplification_factor;
+                document.getElementById('low_threshold').value = data.recommended_low_threshold;
+                document.getElementById('high_threshold').value = data.recommended_high_threshold;
+            })
+            .catch(error => {
+                console.error('Error fetching recommended values:', error);
+            });
         }
 
         function copyCurves() {
