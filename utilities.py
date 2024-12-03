@@ -11,7 +11,7 @@ frame = multiprocessing.Value('i', 0)
 height = multiprocessing.Value('i', 0, lock=False)
 width = multiprocessing.Value('i', 0, lock=False)
 
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tiff'}
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
