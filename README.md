@@ -49,9 +49,10 @@ The application will start and be accessible at `http://127.0.0.1:5000`
    - Low and High Thresholds
    - Curve and Background Colors
    - Output Format
-4. Example of output with recommended settings on an image.
+4. Example of output with recommended settings on an image of a cat.
 ![Upload Screen](images/catBefore.png)
 ![Upload Screen](images/catAfter.png)
+
 ### Optional: Recommended Settings
 Click "Proceed with Recommended Settings" for automatic parameter optimization.
 
