@@ -1,5 +1,11 @@
 # Image Contour Extraction Web Application
-
+- [Overview](#overview)
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Dependencies](#dependencies)
+- [Troubleshooting](#troubleshooting)
 ## Overview
 Inspired by kevinjycui's DesmosBezierRenderer. This Flask web application provides an interface for extracting and visualizing image contours. It allows users to upload images and generate either mathematical expressions representing the contours or PNG images with traced contour lines.
 
@@ -8,7 +14,7 @@ Inspired by kevinjycui's DesmosBezierRenderer. This Flask web application provid
 - Two output formats:
   1. Mathematical expressions of contours
   2. PNG image with traced contour lines
-- Adjustable curve and background colors
+- Adjustable curve and background colors for png output
 
 ## Prerequisites
 - Python version 3.9+
@@ -50,8 +56,20 @@ The application will start and be accessible at `http://127.0.0.1:5000`
    - Curve and Background Colors
    - Output Format
 4. Example of output with recommended settings on an image of a cat.
-![Upload Screen](images/catBefore.png)
-![Upload Screen](images/catAfter.png)
+<table align="center">
+  <tr>
+    <td>
+      <img src="images/catBefore.png" alt="Cat Before" width="450"/>
+    </td>
+    <td>
+      <img src="images/catAfter.png" alt="Cat After" width="450"/>
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><b>Cat Before</b></td>
+    <td align="center"><b>Cat After</b></td>
+  </tr>
+</table>
 
 ### Optional: Recommended Settings
 Click "Proceed with Recommended Settings" for automatic parameter optimization.
