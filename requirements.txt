@@ -5,3 +5,4 @@ opencv-contrib-python>=4.8.0
 opencv-python-headless>=4.8.0
 Pillow==11.0.0
 potracer==0.0.4
+imageio>=2.31.1

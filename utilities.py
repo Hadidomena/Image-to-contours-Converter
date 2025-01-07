@@ -4,6 +4,12 @@ import cv2
 import numpy as np
 import potrace
 from functools import lru_cache
+from pathlib import Path
+from tempfile import mkdtemp
+import shutil
+from concurrent.futures import ThreadPoolExecutor
+import queue
+from typing import Union, Tuple, Iterator
 
 COLOUR = '#2464b4'
 
@@ -11,8 +17,122 @@ frame = multiprocessing.Value('i', 0)
 height = multiprocessing.Value('i', 0, lock=False)
 width = multiprocessing.Value('i', 0, lock=False)
 
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tiff'}
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tiff', 'mp4', 'gif'}
 
+class VideoProcessor:
+    def __init__(self, max_workers: int = 4):
+        self.max_workers = max_workers
+        self.progress_queue = queue.Queue()
+        
+    def get_progress(self) -> Iterator[float]:
+        while not self.progress_queue.empty():
+            yield self.progress_queue.get()
+
+    def process_frame(self, frame_idx, frame, params):
+        try:
+            low_threshold = params['low_threshold']
+            high_threshold = params['high_threshold']
+            simplification_factor = params['simplification_factor']
+            curve_color = params['curve_color']
+            background_color = params['background_color']
+
+            # Get contours using utility function
+            contours = get_contours(frame, low_threshold, high_threshold)
+
+            # Get trace from contours
+            path = get_trace(contours, simplification_factor)
+
+            # Create an output image using the utility function
+            processed_frame = create_png_image(
+                original_image=frame,
+                path=path,
+                curve_color_hex=curve_color,
+                background_color_hex=background_color
+            )
+
+            return frame_idx, processed_frame
+        except Exception as e:
+            raise RuntimeError(f"Error processing frame {frame_idx}: {e}")
+
+    def process_video(self, input_path, output_path, simplification_factor, curve_color, background_color):
+        cap = cv2.VideoCapture(str(input_path))
+        if not cap.isOpened():
+            raise ValueError(f"Failed to open video file: {input_path}")
+
+        fps = int(cap.get(cv2.CAP_PROP_FPS))
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        temp_dir = Path(mkdtemp())
+        try:
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = []
+                frame_idx = 0
+
+                while True:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+
+                    # Dynamically calculate recommended thresholds for each frame
+                    low_threshold, high_threshold = calculate_recommended_thresholds(frame)
+                    frame_params = {
+                        'low_threshold': low_threshold,
+                        'high_threshold': high_threshold,
+                        'simplification_factor': simplification_factor,
+                        'curve_color': curve_color,
+                        'background_color': background_color
+                    }
+
+                    future = executor.submit(self.process_frame, frame_idx, frame, frame_params)
+                    futures.append(future)
+                    frame_idx += 1
+                    self.progress_queue.put(frame_idx / frame_count * 100)
+
+                frames = [future.result()[1] for future in futures]
+
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
+
+            for frame in frames:
+                out.write(frame)
+        
+            out.release()
+            cap.release()
+            return str(output_path), fps
+
+        finally:
+            shutil.rmtree(temp_dir)
+
+
+
+def calculate_recommended_thresholds(frame):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    mean = np.mean(gray)
+    median = np.median(gray)
+    std = np.std(gray)
+
+    if mean < 50:
+        low_threshold = int(np.percentile(gray, 5))
+        high_threshold = int(np.percentile(gray, 95))
+    elif mean > 200:
+        inverted_gray = 255 - gray
+        low_threshold = int(np.percentile(inverted_gray, 5))
+        high_threshold = int(np.percentile(inverted_gray, 95))
+    else:
+        low_threshold = max(0, int(median * 0.5))
+        high_threshold = min(255, int(median * 1.5))
+
+    if high_threshold <= low_threshold:
+        low_threshold = max(0, int(median - std))
+        high_threshold = min(255, int(median + std))
+
+    low_threshold = max(0, low_threshold)
+    high_threshold = min(255, max(low_threshold + 1, high_threshold))
+
+    return low_threshold, high_threshold
+    
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 

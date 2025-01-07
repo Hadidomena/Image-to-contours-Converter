@@ -93,6 +93,29 @@
             form.appendChild(input);
             form.submit();
         }
+
+        function checkProgress() {
+            fetch('/progress')
+                .then(response => response.json())
+                .then(data => {
+                    const progress = document.getElementById('progress');
+                    const progressText = document.getElementById('progress-text');
+                    progress.style.width = `${data.progress}%`;
+                    progressText.textContent = `Processing: ${Math.round(data.progress)}%`;
+                    
+                    if (data.progress < 100) {
+                        setTimeout(checkProgress, 500);
+                    }
+                });
+        }
+
+        document.getElementById('upload-form').onsubmit = function() {
+            const fileInput = document.querySelector('input[type=file]');
+            if (fileInput.files[0].name.match(/\.(mp4|gif)$/)) {
+                document.getElementById('progress-container').style.display = 'block';
+                setTimeout(checkProgress, 500);
+            }
+        };
     </script>
 </head>
 <body>
@@ -100,7 +123,7 @@
     <div class="upload-section">
         <h2>Upload Image</h2>
         <form id="upload-form" action="/" method="post" enctype="multipart/form-data">
-            <input type="file" name="file" accept=".png, .jpg, .jpeg" onchange="previewFile()">
+            <input type="file" name="file" accept=".png, .jpg, .jpeg, .mp4, .gif" onchange="previewFile()">
             <label for="simplification_factor">Simplification Factor:</label>
             <input type="number" step="0.01" name="simplification_factor" id="simplification_factor" value="0.02">
             <label for="low_threshold">Low Threshold:</label>
@@ -122,6 +145,12 @@
         <img id="uploaded-image" src="" alt="Uploaded Image">
     </div>
     <div class="result-section">
+        <div id="progress-container" style="display: none;">
+            <div class="progress-bar" style="width: 100%; height: 20px; background: #eee; margin: 10px 0;">
+                <div id="progress" style="width: 0%; height: 100%; background: #2464b4; transition: width 0.3s;"></div>
+            </div>
+            <p id="progress-text">Processing: 0%</p>
+        </div>
         <button class="copy-button" onclick="copyCurves()">Copy Curves</button>
         <h2>Result</h2>
         {% if expressions %}
@@ -132,8 +161,13 @@
                     </li>
                 {% endfor %}
             </ul>
+        {% elif video_url %}
+            <video controls>
+                <source src="{{ video_url }}" type="video/mp4">
+                Your browser does not support the video tag.
+            </video>
         {% elif png_image_url %}
-            <img src="{{ png_image_url }}" alt="Resulting PNG" style="max-width: 100%;">
+            <img src="{{ png_image_url }}" alt="Processed image">
         {% else %}
             <p>No results yet.</p>
         {% endif %}
