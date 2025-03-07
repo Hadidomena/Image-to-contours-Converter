@@ -1,0 +1,35 @@
+body {
+    background-color: rosybrown;
+    font-family: Arial, serif;
+    margin: 0;
+    display: flex;
+    height: 100vh;
+}
+.container {
+    display: flex;
+    flex-direction: row;
+    width: 100%;
+}
+.upload-section, .result-section {
+    flex: 1;
+    padding: 20px;
+    box-sizing: border-box;
+    border-right: 1px solid #ccc;
+}
+.result-section {
+    border-right: none;
+}
+form {
+    display: flex;
+    flex-direction: column;
+}
+input[type="file"], input[type="number"], input[type="submit"], button {
+    margin-bottom: 10px;
+}
+#uploaded-image {
+    max-width: 100%;
+    margin-top: 10px;
+}
+.copy-button {
+    margin-bottom: 10px;
+}

@@ -61,14 +61,13 @@ class VideoProcessor:
 
         fps = int(cap.get(cv2.CAP_PROP_FPS))
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        processed_frames = []
+        frame_idx = 0
 
-        temp_dir = Path(mkdtemp())
         try:
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 futures = []
-                frame_idx = 0
 
                 while True:
                     ret, frame = cap.read()
@@ -90,20 +89,31 @@ class VideoProcessor:
                     frame_idx += 1
                     self.progress_queue.put(frame_idx / frame_count * 100)
 
-                frames = [future.result()[1] for future in futures]
+                # Sort frames by index and collect processed frames
+                processed_frames = [future.result()[1] for future in sorted(futures, key=lambda x: x.result()[0])]
 
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
-
-            for frame in frames:
-                out.write(frame)
-        
-            out.release()
-            cap.release()
-            return str(output_path), fps
+            # Convert frames to RGB for GIF
+            rgb_frames = [cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) for frame in processed_frames]
+            
+            # Calculate appropriate duration for each frame
+            duration = int(1000 / fps)  # Convert fps to milliseconds
+            
+            # Save as GIF using PIL
+            from PIL import Image
+            imgs = [Image.fromarray(frame) for frame in rgb_frames]
+            imgs[0].save(
+                output_path.with_suffix('.gif'),  # Ensure GIF extension
+                save_all=True,
+                append_images=imgs[1:],
+                duration=duration,
+                loop=0,
+                optimize=True
+            )
+            
+            return str(output_path.with_suffix('.gif')), fps
 
         finally:
-            shutil.rmtree(temp_dir)
+            cap.release()
 
 
 

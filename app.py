@@ -32,16 +32,13 @@ def upload_file():
             try:
                 low_threshold = request.form.get('low_threshold', '').strip()
                 high_threshold = request.form.get('high_threshold', '').strip()
-                simplification_factor = request.form.get('simplification_factor', 0,00)
+                simplification_factor = request.form.get('simplification_factor', '0.00')
+                
                 # Use defaults if fields are empty
                 low_threshold = int(low_threshold) if low_threshold else 50
                 high_threshold = int(high_threshold) if high_threshold else 150
-        
                 simplification_factor = float(simplification_factor) if simplification_factor else 0.00
 
-                # Validate thresholds
-                if high_threshold <= low_threshold:
-                    return "High threshold must be greater than low threshold."
                 curve_color = request.form.get('curve_color', COLOUR)
                 background_color = request.form.get('background_color', '#ffffff')
                 output_format = request.form.get('output_format', 'expressions')
@@ -53,26 +50,25 @@ def upload_file():
                 
                 if file_ext in {'mp4', 'gif'}:
                     input_path = output_dir / f"input.{file_ext}"
-                    output_path = output_dir / f"output.mp4"
+                    output_path = output_dir / "output"  # Extension will be added in processor
                     
                     # Save uploaded file
                     file.save(input_path)
                     
                     # Process video
-                    _, fps = processor.process_video(
-                        str(input_path),
-                        str(output_path),
+                    output_path, fps = processor.process_video(
+                        input_path,
+                        output_path,
                         simplification_factor=simplification_factor,
                         curve_color=curve_color,
                         background_color=background_color
                     )
                     
-                    # Read and encode processed video
+                    # Read and encode processed GIF
                     with open(output_path, 'rb') as f:
                         video_data = f.read()
                         video_base64 = base64.b64encode(video_data).decode()
-                        video_url = f"data:video/mp4;base64,{video_base64}"
-                        
+                        video_url = f"data:image/gif;base64,{video_base64}"
                 else:
                     # Process single image
                     file_bytes = file.read()

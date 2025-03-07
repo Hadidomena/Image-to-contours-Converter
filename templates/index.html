@@ -4,119 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Image Edge Detection</title>
-    <style>
-        body {
-            display: flex;
-            height: 100vh;
-            margin: 0;
-            font-family: Arial, sans-serif;
-        }
-        .container {
-            display: flex;
-            flex-direction: row;
-            width: 100%;
-        }
-        .upload-section, .result-section {
-            flex: 1;
-            padding: 20px;
-            box-sizing: border-box;
-            border-right: 1px solid #ccc;
-        }
-        .result-section {
-            border-right: none;
-        }
-        form {
-            display: flex;
-            flex-direction: column;
-        }
-        input[type="file"], input[type="number"], input[type="submit"], button {
-            margin-bottom: 10px;
-        }
-        #uploaded-image {
-            max-width: 100%;
-            margin-top: 10px;
-        }
-        .copy-button {
-            margin-bottom: 10px;
-        }
-    </style>
-    <script>
-        function previewFile() {
-            const file = document.querySelector('input[type=file]').files[0];
-            const preview = document.getElementById('uploaded-image');
-            const reader = new FileReader();
-
-            reader.addEventListener('load', function () {
-                preview.src = reader.result;
-                updateRecommendedValues(file);
-            }, false);
-
-            if (file) {
-                reader.readAsDataURL(file);
-            }
-        }
-
-        function updateRecommendedValues(file) {
-            const formData = new FormData();
-            formData.append('file', file);
-
-            fetch('/get_recommended_values', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.json())
-            .then(data => {
-                document.getElementById('simplification_factor').value = data.recommended_simplification_factor;
-                document.getElementById('low_threshold').value = data.recommended_low_threshold;
-                document.getElementById('high_threshold').value = data.recommended_high_threshold;
-            })
-            .catch(error => {
-                console.error('Error fetching recommended values:', error);
-            });
-        }
-
-        function copyCurves() {
-            const curvesText = document.getElementById('curves-text').innerText;
-            navigator.clipboard.writeText(curvesText).then(() => {
-                alert('Curves copied to clipboard!');
-            }).catch(err => {
-                alert('Failed to copy curves: ' + err);
-            });
-        }
-
-        function proceedWithRecommended() {
-            const form = document.getElementById('upload-form');
-            const input = document.createElement('input');
-            input.type = 'hidden';
-            input.name = 'recommended';
-            input.value = 'true';
-            form.appendChild(input);
-            form.submit();
-        }
-
-        function checkProgress() {
-            fetch('/progress')
-                .then(response => response.json())
-                .then(data => {
-                    const progress = document.getElementById('progress');
-                    const progressText = document.getElementById('progress-text');
-                    progress.style.width = `${data.progress}%`;
-                    progressText.textContent = `Processing: ${Math.round(data.progress)}%`;
-                    
-                    if (data.progress < 100) {
-                        setTimeout(checkProgress, 500);
-                    }
-                });
-        }
-
-        document.getElementById('upload-form').onsubmit = function() {
-            const fileInput = document.querySelector('input[type=file]');
-            if (fileInput.files[0].name.match(/\.(mp4|gif)$/)) {
-                document.getElementById('progress-container').style.display = 'block';
-                setTimeout(checkProgress, 500);
-            }
-        };
-    </script>
+    <link rel="stylesheet"  type="text/css" href="{{url_for('.static', filename='styles.css')}}">
+    <script src="{{url_for('static', filename='scripts.js')}}"></script>
 </head>
 <body>
 <div class="container">
@@ -145,25 +34,19 @@
         <img id="uploaded-image" src="" alt="Uploaded Image">
     </div>
     <div class="result-section">
-        <div id="progress-container" style="display: none;">
-            <div class="progress-bar" style="width: 100%; height: 20px; background: #eee; margin: 10px 0;">
-                <div id="progress" style="width: 0%; height: 100%; background: #2464b4; transition: width 0.3s;"></div>
-            </div>
-            <p id="progress-text">Processing: 0%</p>
-        </div>
         <button class="copy-button" onclick="copyCurves()">Copy Curves</button>
         <h2>Result</h2>
         {% if expressions %}
             <ul id="curves-text">
                 {% for expr in expressions %}
                     <li>
-                        <span style="color: {{ expr.color }};">{{ expr.latex }}</span>
+                        <span style="color: cornsilk"></span>
                     </li>
                 {% endfor %}
             </ul>
         {% elif video_url %}
             <video controls>
-                <source src="{{ video_url }}" type="video/mp4">
+                <source src="{{ video_url }}" type="video/gif">
                 Your browser does not support the video tag.
             </video>
         {% elif png_image_url %}
